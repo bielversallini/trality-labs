@@ -12,14 +12,15 @@ OVERSOLD   = "OVERSOLD"
 
 ############################################################################################################################
 
-def initialize(state):
+def initialize(state):    
     state.signals = {}
+    state.positions = { 'limit': 10, 'count': 0 }
 
 ############################################################################################################################
 
 def resolve_macd(state, data):
-    indicator = data.macd(12, 26, 9).last
-    buy = indicator[0] >= indicator[1] 
+    indicator = data.macd(12,26,9).last
+    buy = indicator[2] >= 0
 
     if buy:
         signal = LONG
@@ -40,6 +41,8 @@ def resolve_stoch(state, data):
         signal = SHORT
     elif not buy and indicator[0] <= 20:
         signal = OVERSOLD
+    else:
+        signal = NEUTRAL
 
     state.signals[data.symbol]['stoch'] = signal
 
@@ -50,9 +53,9 @@ def resolve_ema(state, data):
 
     signal = NEUTRAL
 
-    if fast_ema > medium_ema and medium_ema > slow_ema:
+    if fast_ema > medium_ema and medium_ema > slow_ema and data.close.last > data.open.last:
         signal = LONG
-    elif fast_ema < medium_ema and medium_ema < slow_ema:
+    elif fast_ema < medium_ema and medium_ema < slow_ema and data.close.last < data.open.last:
         signal = SHORT
 
     state.signals[data.symbol]['ema'] = signal
@@ -63,14 +66,43 @@ def compute_signals(state, data):
     resolve_macd(state, data)
     resolve_stoch(state, data)
     resolve_ema(state, data)
-    
-    log("The signals for {} are {}".format(data.symbol, state.signals[data.symbol]), 2)
+
+############################################################################################################################
+
+def is_long(signals):
+    return (signals['macd'] == LONG and signals['stoch'] == LONG) and signals['ema'] == LONG
+
+def is_short(signals):
+    return (signals['macd'] == SHORT and signals['stoch'] == SHORT) or signals['ema'] == SHORT
+
+def define_strategy(state, data):
+    action = NEUTRAL
+
+    signals = state.signals[data.symbol]
+
+    if is_long(signals):
+        action = LONG
+    elif is_short(signals):
+        action = SHORT
+
+    state.signals[data.symbol]['action'] = action
+
+    if action != NEUTRAL:
+        log("{} - The signals are: {}".format(data.symbol, state.signals[data.symbol]), 2)
 
 ############################################################################################################################
 
 def process_orders(state, data):
-    # TODO
-    return
+
+    if  not state.signals[data.symbol]['has_position'] and state.signals[data.symbol]['action'] == LONG and state.positions['count'] < state.positions['limit']:
+        log("{} - Opening position: {}".format(data.symbol, state.signals[data.symbol]), 3)
+        order_market_value(data.symbol, 50.0)
+        state.positions['count'] += 1
+        
+    elif state.signals[data.symbol]['has_position'] and state.signals[data.symbol]['action'] == SHORT:
+        log("{} - Closing position: {}.".format(data.symbol, state.signals[data.symbol]), 3)
+        close_position(data.symbol)
+        state.positions['count'] -= 1
 
 ############################################################################################################################
 
@@ -82,7 +114,11 @@ def execute(state, dataMap):
         if state.signals.get(symbol) == None:
             state.signals[symbol] = {} 
 
+        state.signals[symbol]['has_position'] = has_open_position(symbol, False)
+
         compute_signals(state, data)
+
+        define_strategy(state, data)
 
         process_orders(state, data)
 
